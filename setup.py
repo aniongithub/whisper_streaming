@@ -9,8 +9,8 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'whisper_online=whisper_online:__main__',
-            'whisper_online_server=whisper_online_server:__main__',
+            'whisper_online=whisper_streaming.whisper_online:__main__',
+            'whisper_online_server=whisper_streaming.whisper_online_server:__main__',
         ],
     },
 )
