@@ -119,11 +119,13 @@ class ServerProcessor:
         return np.concatenate(out)
 
     def format_output_transcript(self,o):
-        # output format in stdout is like:
-        # 0 1720 Takhle to je
-        # - the first two words are:
-        #    - beg and end timestamp of the text segment, as estimated by Whisper model. The timestamps are not accurate, but they're useful anyway
-        # - the next words: segment transcript
+        # output format is like:
+        # 0 1720 0.95 Takhle to je [word1:0.89, word2:0.92, ...]
+        # - the first three values are:
+        #    - beg and end timestamp of the text segment, as estimated by Whisper model
+        #    - average probability/confidence score for the segment
+        # - the next value: segment transcript
+        # - the last part: individual word probabilities in brackets
 
         # This function differs from whisper_online.output_transcript in the following:
         # succeeding [beg,end] intervals are not overlapping because ELITR protocol (implemented in online-text-flow events) requires it.
@@ -131,13 +133,27 @@ class ServerProcessor:
         # Usually it differs negligibly, by appx 20 ms.
 
         if o[0] is not None:
-            beg, end = o[0]*1000,o[1]*1000
+            # Handle both old 3-tuple and new 5-tuple formats
+            if len(o) >= 5:
+                beg, end, text, avg_prob, word_probs = o[0]*1000, o[1]*1000, o[2], o[3], o[4]
+            else:
+                beg, end, text = o[0]*1000, o[1]*1000, o[2]
+                avg_prob = 1.0
+                word_probs = []
+                
             if self.last_end is not None:
                 beg = max(beg, self.last_end)
 
             self.last_end = end
-            print("%1.0f %1.0f %s" % (beg,end,o[2]),flush=True,file=sys.stderr)
-            return "%1.0f %1.0f %s" % (beg,end,o[2])
+            
+            # Format word probabilities for display
+            word_prob_str = ", ".join([f"{word}:{prob:.3f}" for word, prob in word_probs]) if word_probs else ""
+            if word_prob_str:
+                word_prob_str = f" [{word_prob_str}]"
+            
+            output_msg = "%1.0f %1.0f %1.3f %s%s" % (beg, end, avg_prob, text, word_prob_str)
+            print(output_msg, flush=True, file=sys.stderr)
+            return output_msg
         else:
             logger.debug("No text in this segment")
             return None

@@ -77,11 +77,12 @@ class WhisperTimestampedASR(ASRBase):
         return result
  
     def ts_words(self,r):
-        # return: transcribe result object to [(beg,end,"word1"), ...]
+        # return: transcribe result object to [(beg,end,"word1",prob), ...]
         o = []
         for s in r["segments"]:
             for w in s["words"]:
-                t = (w["start"],w["end"],w["text"])
+                prob = w.get("probability", 1.0)  # Default to 1.0 if no probability
+                t = (w["start"],w["end"],w["text"],prob)
                 o.append(t)
         return o
 
@@ -143,7 +144,8 @@ class FasterWhisperASR(ASRBase):
                     continue
                 # not stripping the spaces -- should not be merged with them!
                 w = word.word
-                t = (word.start, word.end, w)
+                prob = getattr(word, 'probability', 1.0)  # Default to 1.0 if no probability
+                t = (word.start, word.end, w, prob)
                 o.append(t)
         return o
 
@@ -253,7 +255,7 @@ class MLXWhisper(ASRBase):
         Extract timestamped words from transcription segments and skips words with high no-speech probability.
         """
         return [
-            (word["start"], word["end"], word["word"])
+            (word["start"], word["end"], word["word"], word.get("probability", 1.0))
             for segment in segments
             for word in segment.get("words", [])
             if segment.get("no_speech_prob", 0) <= 0.9
@@ -308,7 +310,8 @@ class OpenaiApiASR(ASRBase):
             if any(s[0] <= start <= s[1] for s in no_speech_segments):
                 # print("Skipping word", word.get("word"), "because it's in a no-speech segment")
                 continue
-            o.append((start, end, word.word))
+            prob = getattr(word, 'probability', 1.0)  # Default to 1.0 if no probability
+            o.append((start, end, word.word, prob))
         return o
 
 
@@ -372,11 +375,11 @@ class HypothesisBuffer:
         # compare self.commited_in_buffer and new. It inserts only the words in new that extend the commited_in_buffer, it means they are roughly behind last_commited_time and new in content
         # the new tail is added to self.new
         
-        new = [(a+offset,b+offset,t) for a,b,t in new]
-        self.new = [(a,b,t) for a,b,t in new if a > self.last_commited_time-0.1]
+        new = [(a+offset,b+offset,t,p) for a,b,t,p in new]
+        self.new = [(a,b,t,p) for a,b,t,p in new if a > self.last_commited_time-0.1]
 
         if len(self.new) >= 1:
-            a,b,t = self.new[0]
+            a,b,t,p = self.new[0]
             if abs(a - self.last_commited_time) < 1:
                 if self.commited_in_buffer:
                     # it's going to search for 1, 2, ..., 5 consecutive words (n-grams) that are identical in commited and new. If they are, they're dropped.
@@ -398,13 +401,13 @@ class HypothesisBuffer:
 
         commit = []
         while self.new:
-            na, nb, nt = self.new[0]
+            na, nb, nt, np = self.new[0]
 
             if len(self.buffer) == 0:
                 break
 
             if nt == self.buffer[0][2]:
-                commit.append((na,nb,nt))
+                commit.append((na,nb,nt,np))
                 self.last_commited_word = nt
                 self.last_commited_time = nb
                 self.buffer.pop(0)
@@ -464,7 +467,7 @@ class OnlineASRProcessor:
             k -= 1
 
         p = self.commited[:k]
-        p = [t for _,_,t in p]
+        p = [t for _,_,t,_ in p]  # Extract text from 4-tuples
         prompt = []
         l = 0
         while p and l < 200:  # 200 characters prompt size
@@ -472,7 +475,7 @@ class OnlineASRProcessor:
             l += len(x)+1
             prompt.append(x)
         non_prompt = self.commited[k:]
-        return self.asr.sep.join(prompt[::-1]), self.asr.sep.join(t for _,_,t in non_prompt)
+        return self.asr.sep.join(prompt[::-1]), self.asr.sep.join(t for _,_,t,_ in non_prompt)
 
     def process_iter(self):
         """Runs on the current audio buffer.
@@ -576,7 +579,7 @@ class OnlineASRProcessor:
 
     def words_to_sentences(self, words):
         """Uses self.tokenizer for sentence segmentation of words.
-        Returns: [(beg,end,"sentence 1"),...]
+        Returns: [(beg,end,"sentence 1",avg_prob),...]
         """
         
         cwords = [w for w in words]
@@ -588,15 +591,21 @@ class OnlineASRProcessor:
             end = None
             sent = s.pop(0).strip()
             fsent = sent
+            sent_probs = []
             while cwords:
-                b,e,w = cwords.pop(0)
+                b,e,w,p = cwords.pop(0)
                 w = w.strip()
                 if beg is None and sent.startswith(w):
                     beg = b
+                    sent_probs.append(p)
                 elif end is None and sent == w:
                     end = e
-                    out.append((beg,end,fsent))
+                    sent_probs.append(p)
+                    avg_prob = sum(sent_probs) / len(sent_probs) if sent_probs else 1.0
+                    out.append((beg,end,fsent,avg_prob))
                     break
+                else:
+                    sent_probs.append(p)
                 sent = sent[len(w):].strip()
         return out
 
@@ -613,18 +622,24 @@ class OnlineASRProcessor:
 
     def to_flush(self, sents, sep=None, offset=0, ):
         # concatenates the timestamped words or sentences into one sequence that is flushed in one line
-        # sents: [(beg1, end1, "sentence1"), ...] or [] if empty
-        # return: (beg1,end-of-last-sentence,"concatenation of sentences") or (None, None, "") if empty
+        # sents: [(beg1, end1, "sentence1", prob1), ...] or [] if empty
+        # return: (beg1,end-of-last-sentence,"concatenation of sentences", avg_prob, word_probabilities) or (None, None, "", 1.0, []) if empty
         if sep is None:
             sep = self.asr.sep
         t = sep.join(s[2] for s in sents)
         if len(sents) == 0:
             b = None
             e = None
+            avg_prob = 1.0
+            word_probs = []
         else:
             b = offset + sents[0][0]
             e = offset + sents[-1][1]
-        return (b,e,t)
+            # Calculate average probability
+            avg_prob = sum(s[3] for s in sents) / len(sents) if sents else 1.0
+            # Create word probability list: [(word, probability), ...]
+            word_probs = [(s[2].strip(), s[3]) for s in sents if s[2].strip()]
+        return (b,e,t,avg_prob,word_probs)
 
 class VACOnlineASRProcessor(OnlineASRProcessor):
     '''Wraps OnlineASRProcessor with VAC (Voice Activity Controller). 
@@ -718,7 +733,7 @@ class VACOnlineASRProcessor(OnlineASRProcessor):
             return ret
         else:
             print("no online update, only VAD", self.status, file=self.logfile)
-            return (None, None, "")
+            return (None, None, "", 1.0, [])
 
     def finish(self):
         ret = self.online.finish()
@@ -887,16 +902,23 @@ if __name__ == "__main__":
 
     def output_transcript(o, now=None):
         # output format in stdout is like:
-        # 4186.3606 0 1720 Takhle to je
-        # - the first three words are:
+        # 4186.3606 0 1720 0.95 Takhle to je [word1:0.89, word2:0.92, ...]
+        # - the first four values are:
         #    - emission time from beginning of processing, in milliseconds
         #    - beg and end timestamp of the text segment, as estimated by Whisper model. The timestamps are not accurate, but they're useful anyway
-        # - the next words: segment transcript
+        #    - average probability/confidence score for the segment
+        # - the next value: segment transcript
+        # - the last part: individual word probabilities in brackets
         if now is None:
             now = time.time()-start
         if o[0] is not None:
-            print("%1.4f %1.0f %1.0f %s" % (now*1000, o[0]*1000,o[1]*1000,o[2]),file=logfile,flush=True)
-            print("%1.4f %1.0f %1.0f %s" % (now*1000, o[0]*1000,o[1]*1000,o[2]),flush=True)
+            beg, end, text, avg_prob, word_probs = o[0], o[1], o[2], o[3], o[4]
+            # Format word probabilities for display
+            word_prob_str = ", ".join([f"{word}:{prob:.3f}" for word, prob in word_probs]) if word_probs else ""
+            if word_prob_str:
+                word_prob_str = f" [{word_prob_str}]"
+            print("%1.4f %1.0f %1.0f %1.3f %s%s" % (now*1000, beg*1000, end*1000, avg_prob, text, word_prob_str),file=logfile,flush=True)
+            print("%1.4f %1.0f %1.0f %1.3f %s%s" % (now*1000, beg*1000, end*1000, avg_prob, text, word_prob_str),flush=True)
         else:
             # No text, so no output
             pass
