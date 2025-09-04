@@ -155,15 +155,19 @@ class ServerProcessor:
             if a is None:
                 break
             self.online_asr_proc.insert_audio_chunk(a)
-            o = online.process_iter()
+            o = self.online_asr_proc.process_iter()
             try:
                 self.send_result(o)
             except BrokenPipeError:
                 logger.info("broken pipe -- connection closed?")
                 break
 
-#        o = online.finish()  # this should be working
-#        self.send_result(o)
+        # Process any remaining audio in the buffer
+        try:
+            o = self.online_asr_proc.finish()
+            self.send_result(o)
+        except BrokenPipeError:
+            logger.info("broken pipe -- connection closed during finish")
 
 
 

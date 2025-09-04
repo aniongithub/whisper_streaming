@@ -1,6 +1,9 @@
 {
 	"name": "${localWorkspaceFolderBasename}",
-	"dockerFile": "gpu.Dockerfile",
+	"dockerFile": "../Dockerfile",
+	"build": {
+		"target": "devcontainer"
+	},
 	"context": "..",
 	"customizations": {
 		"vscode": {
@@ -11,14 +14,29 @@
 			]
 		}
 	},
-	"initializeCommand": "xhost +SI:localuser:root || true",
+
+	"containerEnv": {
+		"SHELL": "/bin/bash"
+	},
+
+	"features": {
+		"ghcr.io/nils-geistmann/devcontainers-features/create-remote-user:0": {
+			"passwordlessSudo": true
+		}
+	},
+	"remoteUser": "vscode",	// Configure tool-specific properties.
+
+	"forwardPorts": [
+		43007
+	],
+	"portsAttributes": {
+		"43007": {
+			"label": "Whisper Server",
+			"onAutoForward": "silent"
+		}
+	},
 	"runArgs": [
 		"--privileged",
-		"-e", "DISPLAY=${env:DISPLAY}",
-		"-v", "/tmp/.X11-unix:/tmp/.X11-unix",
-		"--gpus", "all",
-		"--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined",
-		"--network", "host"
-	],
-	"updateContentCommand": "pip3 install -r requirements.txt"
+		"--gpus", "all"
+	]
 }
