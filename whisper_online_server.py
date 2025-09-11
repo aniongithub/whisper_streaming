@@ -18,6 +18,13 @@ parser.add_argument("--warmup-file", type=str, dest="warmup_file",
 
 # options from whisper_online
 add_shared_args(parser)
+
+# diarization options
+parser.add_argument("--enable-diarization", action="store_true", 
+                   help="Enable speaker diarization using Resemblyzer and Silero VAD")
+parser.add_argument("--diarization-similarity-threshold", type=float, default=0.75,
+                   help="Speaker similarity threshold for diarization (default: 0.75)")
+
 args = parser.parse_args()
 
 set_logging(args,logger,other="")
@@ -54,7 +61,7 @@ import socket
 class Connection:
     '''it wraps conn object'''
     PACKET_SIZE = 32000*5*60 # 5 minutes # was: 65536
-
+# whis
     def __init__(self, conn):
         self.conn = conn
         self.last_line = ""
@@ -83,18 +90,44 @@ class Connection:
 import io
 import soundfile
 
+# Import diarization if enabled
+if args.enable_diarization:
+    from streaming_diarizer import StreamingDiarizer
+
 # wraps socket and ASR object, and serves one client connection. 
 # next client should be served by a new instance of this object
 class ServerProcessor:
 
-    def __init__(self, c, online_asr_proc, min_chunk):
+    def __init__(self, c, online_asr_proc, min_chunk, enable_diarization=False, diarization_similarity_threshold=0.75):
         self.connection = c
         self.online_asr_proc = online_asr_proc
         self.min_chunk = min_chunk
 
         self.last_end = None
-
         self.is_first = True
+        
+        # Diarization setup
+        self.enable_diarization = enable_diarization
+        self.diarizer = None
+        
+        if enable_diarization:
+            try:
+                logger.info("Attempting to initialize diarization...")
+                self.diarizer = StreamingDiarizer(
+                    similarity_threshold=diarization_similarity_threshold
+                )
+                if self.diarizer.is_enabled():
+                    logger.info("✓ Diarization enabled and models loaded successfully")
+                else:
+                    logger.warning("✗ Diarization models not available - continuing without speaker identification")
+                    logger.warning("Install dependencies: pip install resemblyzer silero-vad")
+                    self.enable_diarization = False
+            except Exception as e:
+                logger.warning(f"✗ Failed to initialize diarization: {e}")
+                logger.warning("Install dependencies: pip install resemblyzer silero-vad")
+                self.enable_diarization = False
+        else:
+            logger.info("Diarization disabled (use --enable-diarization to enable)")
 
     def receive_audio_chunk(self):
         # receive all audio that is available by this time
@@ -120,11 +153,12 @@ class ServerProcessor:
 
     def format_output_transcript(self,o):
         # output format is like:
-        # 0 1720 0.95 Takhle to je [word1:0.89, word2:0.92, ...]
+        # 0 1720 0.95 Takhle to je [SPEAKER_00] [word1:0.89, word2:0.92, ...]
         # - the first three values are:
         #    - beg and end timestamp of the text segment, as estimated by Whisper model
         #    - average probability/confidence score for the segment
         # - the next value: segment transcript
+        # - followed by speaker ID if diarization is enabled
         # - the last part: individual word probabilities in brackets
 
         # This function differs from whisper_online.output_transcript in the following:
@@ -146,12 +180,32 @@ class ServerProcessor:
 
             self.last_end = end
             
+            # Add speaker identification if diarization is enabled
+            speaker_info = ""
+            if self.enable_diarization and self.diarizer:
+                # Get speaker for the middle of the segment
+                mid_timestamp = (beg + end) / 2000.0  # Convert to seconds
+                
+                # Use absolute timestamp from start of audio file
+                # Whisper timestamps are already absolute from audio start
+                speaker_id = self.diarizer.get_speaker_for_timestamp(mid_timestamp)
+                
+                if speaker_id:
+                    speaker_info = f" [{speaker_id}]"
+                    logger.debug(f"Speaker identified: {speaker_id} for timestamp {mid_timestamp:.2f}s")
+                else:
+                    logger.debug(f"No speaker found for timestamp {mid_timestamp:.2f}s")
+                    # Debug: show available speaker segments
+                    if hasattr(self.diarizer, 'current_speakers') and self.diarizer.current_speakers:
+                        segments_info = [(f"{s:.2f}-{e:.2f}s:{spk}" ) for (s,e), spk in self.diarizer.current_speakers.items()]
+                        logger.debug(f"Available segments: {segments_info}")
+            
             # Format word probabilities for display
             word_prob_str = ", ".join([f"{word}:{prob:.3f}" for word, prob in word_probs]) if word_probs else ""
             if word_prob_str:
-                word_prob_str = f" [{word_prob_str}]"
+                word_prob_str = f" [words: {word_prob_str}]"
             
-            output_msg = "%1.0f %1.0f %1.3f %s%s" % (beg, end, avg_prob, text, word_prob_str)
+            output_msg = "%1.0f %1.0f %1.3f %s%s%s" % (beg, end, avg_prob, text, speaker_info, word_prob_str)
             print(output_msg, flush=True, file=sys.stderr)
             return output_msg
         else:
@@ -166,10 +220,25 @@ class ServerProcessor:
     def process(self):
         # handle one client connection
         self.online_asr_proc.init()
+        
         while True:
             a = self.receive_audio_chunk()
             if a is None:
                 break
+            
+            # Add audio to diarization buffer
+            if self.enable_diarization and self.diarizer:
+                self.diarizer.add_audio_chunk(a)
+                
+                # Process diarization if enough audio is buffered
+                if self.diarizer.should_process():
+                    speaker_assignments = self.diarizer.process_chunk()
+                    if speaker_assignments:
+                        logger.debug(f"Diarization processed, found {len(speaker_assignments)} speaker segments")
+                        for (start, end), speaker in speaker_assignments.items():
+                            logger.debug(f"  {start:.2f}-{end:.2f}s: {speaker}")
+            
+            # Process ASR as usual
             self.online_asr_proc.insert_audio_chunk(a)
             o = self.online_asr_proc.process_iter()
             try:
@@ -184,6 +253,14 @@ class ServerProcessor:
             self.send_result(o)
         except BrokenPipeError:
             logger.info("broken pipe -- connection closed during finish")
+        
+        # Log final diarization stats
+        if self.enable_diarization and self.diarizer:
+            stats = self.diarizer.get_speaker_stats()
+            if stats['total_speakers'] > 0:
+                logger.info(f"Session complete: {stats['total_speakers']} speakers detected: {', '.join(stats['speaker_names'])}")
+            else:
+                logger.info("Session complete: No speakers detected")
 
 
 
@@ -197,7 +274,13 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         conn, addr = s.accept()
         logger.info('Connected to client on {}'.format(addr))
         connection = Connection(conn)
-        proc = ServerProcessor(connection, online, args.min_chunk_size)
+        proc = ServerProcessor(
+            connection, 
+            online, 
+            args.min_chunk_size, 
+            enable_diarization=args.enable_diarization,
+            diarization_similarity_threshold=args.diarization_similarity_threshold
+        )
         proc.process()
         conn.close()
         logger.info('Connection to client closed')

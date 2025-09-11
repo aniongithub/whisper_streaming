@@ -6,3 +6,5 @@ soundfile
 colorama
 opus-fast-mosestokenizer
 wtpsplit
+resemblyzer
+silero-vad
