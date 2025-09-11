@@ -1,0 +1,42 @@
+{
+	"name": "${localWorkspaceFolderBasename}",
+	"dockerFile": "../Dockerfile",
+	"build": {
+		"target": "devcontainer"
+	},
+	"context": "..",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"augustocdias.tasks-shell-input",
+				"zaaack.markdown-editor"
+			]
+		}
+	},
+
+	"containerEnv": {
+		"SHELL": "/bin/bash"
+	},
+
+	"features": {
+		"ghcr.io/nils-geistmann/devcontainers-features/create-remote-user:0": {
+			"passwordlessSudo": true
+		}
+	},
+	"remoteUser": "vscode",	// Configure tool-specific properties.
+
+	"forwardPorts": [
+		43007
+	],
+	"portsAttributes": {
+		"43007": {
+			"label": "Whisper Server",
+			"onAutoForward": "silent"
+		}
+	},
+	"runArgs": [
+		"--privileged",
+		"--gpus", "all"
+	]
+}

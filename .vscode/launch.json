@@ -1,0 +1,60 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "inputs": [
+        {
+            "id": "audio_file",
+            "type": "command",
+            "command": "shellCommand.execute",
+            "args": {
+                "command": "find ./assets -type f -name '*.flac' -o -name '*.mp3' -o -name '*.wav'"
+            }
+        }
+    ],
+
+    "configurations": [
+        {
+            "name": "Whisper server",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "whisper_online_server.py",
+            "args": [
+                "--port", "43007",
+                "--warmup-file", "assets/jfk.flac",
+                "--model", "large-v3-turbo",
+                "--model_cache_dir", "./.cache",
+                "--language", "en",
+                "--vad",
+                "--buffer_trimming_sec", "2",
+                "--enable-diarization",
+                "--log-level", "DEBUG"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
+        },
+        {
+            "name": "Whisper client",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "whisper_client.py",
+            "args": [
+                "${input:audio_file}",
+                "--mode", "realtime",
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Whisper Server + Client",
+            "configurations": [
+                "Whisper server",
+                "Whisper client"
+            ]
+        }
+    ]   
+}
