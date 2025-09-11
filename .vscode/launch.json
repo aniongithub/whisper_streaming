@@ -27,7 +27,9 @@
                 "--model_cache_dir", "./.cache",
                 "--language", "en",
                 "--vad",
-                "--buffer_trimming_sec", "2"
+                "--buffer_trimming_sec", "2",
+                "--enable-diarization",
+                "--log-level", "DEBUG"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -40,9 +42,19 @@
             "program": "whisper_client.py",
             "args": [
                 "${input:audio_file}",
+                "--mode", "realtime",
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
         }
-    ]
+    ],
+    "compounds": [
+        {
+            "name": "Whisper Server + Client",
+            "configurations": [
+                "Whisper server",
+                "Whisper client"
+            ]
+        }
+    ]   
 }
