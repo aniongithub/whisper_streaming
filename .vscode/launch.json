@@ -19,7 +19,7 @@
             "name": "Whisper server",
             "type": "debugpy",
             "request": "launch",
-            "program": "whisper_online_server.py",
+            "program": "asr/server.py",
             "args": [
                 "--port", "43007",
                 "--warmup-file", "assets/jfk.flac",
@@ -33,17 +33,23 @@
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}:${PYTHONPATH}"
+            },
             "justMyCode": false
         },
         {
             "name": "Whisper client",
             "type": "debugpy",
             "request": "launch",
-            "program": "whisper_client.py",
+            "program": "client/client.py",
             "args": [
                 "${input:audio_file}",
                 "--mode", "realtime",
             ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}:${PYTHONPATH}"
+            },
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
         }

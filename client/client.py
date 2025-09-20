@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.ERROR)
 
 # Import line_packet for communication protocol
-import line_packet
+import common.line_packet as line_packet
 
 SAMPLING_RATE = 16000
 
